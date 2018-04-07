@@ -5,7 +5,7 @@ namespace Symbiote\Notifications\Tests;
 use SilverStripe\Core\Config\Config;
 use SilverStripe\Dev\SapphireTest;
 use Symbiote\Notifications\Model\SystemNotification;
-use Symbiote\Notifications\Service\EmailNotificationSender;
+use Symbiote\Notifications\Sender\EmailNotificationSender;
 use Symbiote\Notifications\Service\NotificationService;
 
 /* All code covered by the BSD license located at http://silverstripe.org/bsd-license/ */

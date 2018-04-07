@@ -2,7 +2,7 @@
 
 namespace Symbiote\Notifications\Tests;
 
-use Symbiote\Notifications\Model\NotificationSender;
+use Symbiote\Notifications\Sender\NotificationSender;
 
 class DummyNotificationSender implements NotificationSender
 {
@@ -16,7 +16,7 @@ class DummyNotificationSender implements NotificationSender
      */
     public function sendNotification($notification, $context, $data)
     {
-        $users = $notification->getRecipients($context);
+        $users = $notification->getRecipients();
 
         foreach ($users as $user) {
             $this->sendToUser($notification, $context, $user, $data);

@@ -3,6 +3,7 @@
 namespace Symbiote\Notifications\Model;
 
 use Exception;
+use ReflectionClass;
 use SilverStripe\Core\ClassInfo;
 use SilverStripe\Forms\DropdownField;
 use SilverStripe\Forms\FieldList;
@@ -16,12 +17,17 @@ use SilverStripe\ORM\ArrayList;
 use SilverStripe\ORM\DataObject;
 use SilverStripe\Security\Group;
 use SilverStripe\Security\Member;
+use SilverStripe\Security\PermissionRole;
 use SilverStripe\Security\Permission;
 use SilverStripe\Security\PermissionProvider;
 use SilverStripe\SiteConfig\SiteConfig;
 use SilverStripe\View\ArrayData;
 use SilverStripe\View\SSViewer;
 use SilverStripe\View\SSViewer_FromString;
+use SilverStripe\View\ViewableData;
+use Symbiote\Notifications\Model\NotificationChannel;
+use Symbiote\Notifications\Model\NotificationRecipientsMapping;
+use Symbiote\Notifications\Service\NotificationService;
 
 /**
  * SystemNotification
@@ -34,6 +40,13 @@ use SilverStripe\View\SSViewer_FromString;
  * @property string NotificationHTML
  * @property string NotifyOnClass
  * @property string CustomTemplate
+ * @property string Trace
+ *
+ * @method HasManyList Channels() List of NotificationChannels
+ * @method ManyManyList RecipientMembers()
+ * @method ManyManyList RecipientGroups()
+ * @method ManyManyList RecipientRoles()
+ *
  */
 class SystemNotification extends DataObject implements PermissionProvider
 {
@@ -58,13 +71,6 @@ class SystemNotification extends DataObject implements PermissionProvider
      */
     private static $html_notifications = false;
 
-    /**
-     * Name of a template file to render all notifications with
-     * Note: it's up to the NotificationSender to decide whether or not to use it
-     * @var string
-     */
-    private static $default_template;
-
     private static $db = [
         'Identifier' => 'Varchar',        // used to reference this notification from code
         'Title' => 'Varchar(255)',
@@ -73,7 +79,62 @@ class SystemNotification extends DataObject implements PermissionProvider
         'NotificationHTML' => 'HTMLText',
         'NotifyOnClass' => 'Varchar(128)',
         'CustomTemplate' => 'Varchar',
+        'Trace' => 'Boolean',
+        'SendToEveryone' => 'Boolean'
     ];
+
+    private static $has_many = [
+        'Channels' => NotificationChannel::class
+    ];
+
+    private static $many_many = [
+        'RecipientMembers' => Member::class,
+        'RecipientGroups' => Group::class,
+        'RecipientRoles' => PermissionRole::class
+    ];
+
+    /**
+     * @uses    DataObject::populateDefaults()
+     * @return  SystemNotification $this
+     */
+    public function populateDefaults()
+    {
+        // Must have an identifier
+        if (!$this->Identifier) {
+            $this->Identifier = sprintf('%s_%s', (new \ReflectionClass($this))->getShortName(), $this->ID);
+        }
+
+        // Assign channels and standard templates
+        $channels = singleton(NotificationService::class)->config()->get('channels');
+
+        // Sanity check
+        if (!empty($channels) && is_array($channels)) {
+            foreach ($channels as $stub => $sender) {
+                $channel = NotificationChannel::create([
+                    'Channel' => $stub,
+                    'Template' => $sender
+                ]);
+                $this->Channels()->add($channel);
+            }
+        }
+
+        return parent::populateDefaults();
+    }
+
+    /**
+     * @uses    DataObject::validate()
+     * @return  ValidationResult
+     */
+    public function validate()
+    {
+        $result = parent::validate();
+
+        if (!$this->Identifier) {
+            $result->addError('Notification must have an identifier');
+        }
+
+        return $result;
+    }
 
     /**
      * @return FieldList
@@ -198,103 +259,132 @@ class SystemNotification extends DataObject implements PermissionProvider
     }
 
     /**
-     * Get a list of recipients from the notification with the given context
-     * @param  DataObject $context
-     *                The context object this notification is attached to.
-     * @return ArrayList
+     * Add a recipient
+     * @param   Member|Group|PermissionRole $recipient
+     * @return  SystemNotification          $this
      */
-    public function getRecipients($context = null)
+    public function addRecipient($recipient)
     {
+
+        if ($recipient instanceof Member) {
+            $this->RecipientMembers()->add($recipient);
+        }
+
+        if ($recipient instanceof Group) {
+            $this->RecipientGroups()->add($recipient);
+        }
+
+        if ($recipient instanceof PermissionRole) {
+            $this->RecipientRoles()->add($recipient);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Get a list of recipients from the notification with the given context
+     * @return SS_List
+     */
+    public function getRecipients()
+    {
+
         $recipients = ArrayList::create();
+        $ids = [];
 
-        // if we have a context, use that for returning the recipients
-        if ($context && ($context instanceof NotifiedOn) || method_exists(
-            $context,
-            'getRecipients'
-        )
-        ) {
-            $contextRecipients = $context->getRecipients($this->Identifier);
-            if ($contextRecipients) {
-                $recipients->merge($contextRecipients);
-            }
-        }
-
-        if ($context instanceof Member) {
-            $recipients->push($context);
+        // Check for send to everyone
+        if ($this->SendToEveryone) {
+            $recipients = Member::get();
         } else {
-            if ($context instanceof Group) {
-                $recipients = $context->Members();
+
+
+            // Send to members
+            $ids = array_merge($ids, array_keys($this->RecipientMembers()->map()->toArray()));
+
+            // Send to groups
+            foreach ($this->RecipientGroups() as $group) {
+                $ids = array_merge($ids, array_keys($group->Members()->map()->toArray()));
+            }
+
+            // Send to roles
+            foreach ($this->RecipientRoles() as $role) {
+                foreach ($role->Groups() as $group) {
+                    $ids = array_merge($ids, array_keys($group->Members()->map()->toArray()));
+                }
+            }
+
+            if (count($ids)) {
+                $recipients = Member::get()->filter('ID', array_unique($ids));
             }
         }
 
-        // otherwise load with a preconfigured list of recipients
+        $this->extend('updatedRecipients', $recipients);
+
         return $recipients;
     }
 
     /**
      * Format text with given keywords etc
-     * @param  string     $text
-     * @param  DataObject $context
+     * @param  string     $unformatted
+     * @param  ViewableData $context
      * @param  Member     $user
      * @param  array      $extraData
      * @return string
      */
-    public function format($text, $context, $user = null, $extraData = [])
+    public function format($unformatted, ViewableData $context, $user = null, $extraData = [])
     {
-        $data = $this->getTemplateData($context, $user, $extraData);
-
         // render
-        $viewer = new SSViewer_FromString($text);
+        $viewer = new SSViewer_FromString($unformatted);
         try {
-            $string = $viewer->process($data);
+            $string = $viewer->process($context->customise($extraData));
         } catch (Exception $e) {
-            $string = $text;
+            $string = $unformatted;
         }
 
         return $string;
     }
 
     /**
-     * Get compiled template data to render a string with
-     * @param  NotifiedOn $context
-     * @param  Member     $user
-     * @param  array      $extraData
-     * @return ArrayData
+     * Set the template for a mysqlnd_qc_change_handler
+     * @param    string             $channel The channel
+     * @param    string             $template The template (not including .ss extension)
+     * @return   SystemNotification $this
      */
-    public function getTemplateData($context, $user = null, $extraData = [])
+    public function setChannelTemplate($channel, $template)
     {
-        // useful global data
-        $data = [
-            'ThemeDirs' => new ArrayList(SSViewer::get_themes()),
-            'SiteConfig' => SiteConfig::current_site_config(),
-        ];
+        $channel = $this->Channels()->filter('Channel', $channel)->first();
 
-        // the context object, keyed by it's class name
-        $clsPath = explode('\\', get_class($context));
-        $data[end($clsPath)] = $context;
-
-        // data as defined by the context object
-        $contextData = method_exists($context, 'getNotificationTemplateData') ? $context->getNotificationTemplateData() : null;
-        if (is_array($contextData)) {
-            $data = array_merge($data, $contextData);
+        if ($channel) {
+            $channel->Template = $template;
+            $channel->write();
+        } else {
+            user_error(
+                _t(
+                    'Symbiote\Notifications\Model\SystemNotification.INVALIDCHANNEL',
+                    'Channel is not assigned to this notification'
+                ),
+                E_WARNING
+            );
         }
 
-        // the member the notification is being sent to
-        $data['Member'] = $user;
-
-        // extra data
-        $data = array_merge($data, $extraData);
-
-        return ArrayData::create($data);
+        return $this;
     }
 
     /**
-     * Get the custom or default template to render this notification with
-     * @return string
+     * Toggle if resulting notifications are traced. Does not write.
+     * @return  SystemNotification $this
      */
-    public function getTemplate()
-    {
-        return $this->CustomTemplate ? $this->CustomTemplate : $this->config()->get('default_template');
+    public function setTracing($bool) {
+        $this->Trace = $bool;
+        return $this;
+    }
+
+    /**
+     * Toggle sending the notification to everyone. Does not write.
+     * @return  SystemNotification $this
+     */
+    public function setSendToEveryone($bool) {
+        $this->SendToEveryone = $bool;
+        return $this;
     }
 
     /**

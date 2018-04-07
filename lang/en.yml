@@ -1,0 +1,10 @@
+en:
+  Symbiote\Notifications\Model\AllMemebrsGroup:
+    TITLE: 'All Members'
+  Symbiote\Notifications\Model\Channel:
+    INVALIDCHANNEL: 'Provided channel is not defined in config'
+  Symbiote\Notifications\Model\SystemNotification:
+    INVALIDCHANNEL: 'Channel is not assigned to this notification'
+  Symbiote\Notifications\Service\NotificationService:
+    NOTIFICATIONNOTFOUND: 'No notification(s) identified'
+    CONTEXTMISMATCH: 'Context does not match SystemNotification''s NotifyOnClass'

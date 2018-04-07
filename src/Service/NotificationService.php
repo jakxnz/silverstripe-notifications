@@ -5,9 +5,12 @@ namespace Symbiote\Notifications\Service;
 use SilverStripe\Core\ClassInfo;
 use SilverStripe\Core\Config\Configurable;
 use SilverStripe\ORM\DataObject;
+use SilverStripe\ORM\ArrayList;
 use Symbiote\Notifications\Job\SendNotificationJob;
-use Symbiote\Notifications\Model\NotificationSender;
+use Symbiote\Notifications\Sender\NotificationSender;
 use Symbiote\Notifications\Model\SystemNotification;
+use Symbiote\Notifications\Model\SystemNotificationTrace;
+use Symbiote\Notifications\Exception\NotificationServiceException;
 use Symbiote\QueuedJobs\Services\QueuedJobService;
 
 /**
@@ -20,19 +23,12 @@ class NotificationService
     use Configurable;
 
     /**
-     * The default notification send mechanisms to init with
-     * @var array
-     */
-    private static $default_senders = [
-        'email' => EmailNotificationSender::class,
-    ];
-
-    /**
      * The list of channels to send to by default
+     * e.g ['Channel' => 'NotificationSender']
      * @var array
      */
     private static $default_channels = [
-        'email',
+        'Email' => EmailNotificationSender::class,
     ];
 
     /**
@@ -60,7 +56,6 @@ class NotificationService
             $this->config()->use_queues = false;
         }
 
-        $this->setSenders($this->config()->get('default_senders'));
         $this->setChannels($this->config()->get('default_channels'));
     }
 
@@ -69,9 +64,9 @@ class NotificationService
      * @param string $channel The channel to add
      * @return \Symbiote\Notifications\Service\NotificationService
      */
-    public function addChannel($channel)
+    public function addChannel($channel, $sender)
     {
-        $this->channels[] = $channel;
+        $this->channels[$channel] = $sender;
 
         return $this;
     }
@@ -89,65 +84,59 @@ class NotificationService
     }
 
     /**
-     * Add a notification sender
-     * @param string                    $channel The channel to send through
-     * @param NotificationSender|string $sender  The notification channel
-     * @return \Symbiote\Notifications\Service\NotificationService
-     */
-    public function addSender($channel, $sender)
-    {
-        $sender = is_string($sender) ? singleton($sender) : $sender;
-        $this->senders[$channel] = $sender;
-
-        return $this;
-    }
-
-    /**
-     * Add a notification sender to a channel
-     * @param array $senders
-     * @return \Symbiote\Notifications\Service\NotificationService
-     */
-    public function setSenders($senders)
-    {
-        $this->senders = [];
-        if (count($senders)) {
-            foreach ($senders as $channel => $sender) {
-                $this->addSender($channel, $sender);
-            }
-        }
-
-        return $this;
-    }
-
-    /**
      * Get a sender for a particular channel
      * @param string $channel
-     * @return mixed|null
+     * @return NotificationSender|null
      */
     public function getSender($channel)
     {
-        return isset($this->senders[$channel]) ? $this->senders[$channel] : null;
+        return isset($this->channels[$channel]) ? $this->channels[$channel] : null;
     }
 
     /**
      * Trigger a notification event
-     * @param string      $identifier The Identifier of the notification event
-     * @param DataObject  $context    The context (if relevant) of the object to notify on
-     * @param array       $data       Extra data to be sent along with the notification
-     * @param string|null $channel
+     * @param   SystemNotification|string $notification   Notification or identifier
+     * @param   DataObject                $context
+     * @param   array                     $data           Extra data for the sender
+     * @param   string|null $channel
+     * @return  SystemNotification $this
      */
-    public function notify($identifier, $context, $data = [], $channel = null)
+    public function notify($notification, $context, $data = [], $channel = null)
     {
+        // Check for object
+        if ($notification instanceof SystemNotification) {
+            $notifications = ArrayList::create([
+                $notification
+            ]);
+        }
+
         // okay, lets find any notification set up with this identifier
-        if ($notifications = SystemNotification::get()->filter('Identifier', $identifier)) {
-            foreach ($notifications as $notification) {
-                if ($notification->NotifyOnClass && $notification->NotifyOnClass != get_class($context)) {
-                    continue;
-                } else {
-                    $this->sendNotification($notification, $context, $data, $channel);
-                }
+        if (is_string($notification)) {
+            $notifications = SystemNotification::get()->filter('identifier', $notification);
+        }
+
+        // Sanity check
+        if (empty($notifications) || !$notifications->count()) {
+            throw new NotificationServiceException(_t(
+                'Symbiote\Notifications\Serivce\NotificationService.NOTIFICATIONNOTFOUND',
+                'No notification(s) identified'
+            ));
+        }
+
+        // Handle dispatch
+        foreach ($notifications as $notification) {
+            if ($notification->NotifyOnClass && $notification->NotifyOnClass != get_class($context)) {
+                throw new NotificationServiceException(_t(
+                    'Symbiote\Notifications\Serivce\NotificationService.CONTEXTMISMATCH',
+                    'Context does not match SystemNotification\'s NotifyOnClass'
+                ));
+                continue;
+            } else {
+                $this->sendNotification($notification, $context, $data, $channel);
             }
         }
+
+        return $this;
     }
 
     /**
@@ -165,7 +154,7 @@ class NotificationService
         $channel = null
     ) {
         // check to make sure that there are users to send it to. If not, we don't bother with it at all
-        $recipients = $notification->getRecipients($context);
+        $recipients = $notification->getRecipients();
         if (!count($recipients)) {
             return;
         }
@@ -181,11 +170,8 @@ class NotificationService
                 )
             );
         } else {
-            $channels = $channel ? [$channel] : $this->channels;
-            foreach ($channels as $channel) {
-                if ($sender = $this->getSender($channel)) {
-                    $sender->sendNotification($notification, $context, $extraData);
-                }
+            foreach ($recipients as $user) {
+                $this->sendToUser($notification, $context, $user, $extraData);
             }
         }
     }
@@ -206,10 +192,39 @@ class NotificationService
         $channel = $extraData && isset($extraData['SEND_CHANNEL']) ? $extraData['SEND_CHANNEL'] : null;
         $channels = $channel ? [$channel] : $this->channels;
 
-        foreach ($channels as $channel) {
-            if ($sender = $this->getSender($channel)) {
-                $sender->sendToUser($notification, $context, $user, $extraData);
+        foreach ($notification->Channels() as $channel) {
+            if ($channel->canSend()) {
+                $channel->getSender()->sendToUser($notification, $context, $user, $extraData);
             }
         }
+
+        $this->traceNotification($notification, $user);
+    }
+
+    /**
+     * Trace the notification
+     * @param  SystemNotification  $notification
+     * @param  Member              $user         The recipient
+     * @return NotificationService $this
+     */
+    public function traceNotification($notification, $user) {
+
+        // Tracing
+        if ($notification->Trace) {
+            // Notification must be stored to trace
+            $notification->write();
+
+            // Check that user is real
+            if ($user->exists()) {
+
+                $trace = SystemNotificationTrace::create([
+                    'SystemNotificationID' => $notification->ID,
+                    'RecipientID' => $user->ID
+                ]);
+                $trace->write();
+            }
+        }
+
+        return $this;
     }
 }

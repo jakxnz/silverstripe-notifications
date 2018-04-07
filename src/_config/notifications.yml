@@ -1,0 +1,9 @@
+SilverStripe\Security\Member:
+  extensions:
+    - SystemNotificationRecipientExtension
+SilverStripe\Security\Group:
+  extensions:
+    - SystemNotificationRecipientExtension
+SilverStripe\Security\PermissionRole:
+  extensions:
+    - SystemNotificationRecipientExtension

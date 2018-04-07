@@ -2,9 +2,9 @@ mappings:
   NotificationAdmin:        Symbiote\Notifications\Controller\NotificationAdmin
   NotificationHelper:       Symbiote\Notifications\Helper\NotificationHelper
   SendNotificationJob:      Symbiote\Notifications\Job\SendNotificationJob
-  NotificationSender:       Symbiote\Notifications\Model\NotificationSender
+  NotificationSender:       Symbiote\Notifications\Sender\NotificationSender
   NotifiedOn:               Symbiote\Notifications\Model\NotifiedOn
   SystemNotification:       Symbiote\Notifications\Model\SystemNotification
-  EmailNotificationSender:  Symbiote\Notifications\Service\EmailNotificationSender
+  EmailNotificationSender:  Symbiote\Notifications\Sender\EmailNotificationSender
   NotificationService:      Symbiote\Notifications\Service\NotificationService
   CheckEmailNotifications:  Symbiote\Notifications\Task\CheckEmailNotifications

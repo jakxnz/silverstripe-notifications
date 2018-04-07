@@ -19,12 +19,16 @@
     {
       "name": "Nik Spijkerman",
       "email": "nspyke@github.com"
+    },
+    {
+      "name": "Jackson Darlow",
+      "email": "jackson@codecraft.nz"
     }
   ],
   "require": {
     "php": ">=5.6.0",
-    "silverstripe/cms": "^4.0",
     "silverstripe/framework": "^4.0",
+    "silverstripe/admin": "^5.0",
     "symbiote/silverstripe-multivaluefield": "^5.0"
   },
   "autoload": {

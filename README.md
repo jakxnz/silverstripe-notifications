@@ -102,7 +102,7 @@ In your templates, you render the notification text with the $Body variable.
 
 You will probably want to configure a send_from email address - 
 ```
-Symbiote\Notifications\Service\EmailNotificationSender:
+Symbiote\Notifications\Sender\EmailNotificationSender:
   send_notifications_from: 'notifications@example.com'
 ```  
 
